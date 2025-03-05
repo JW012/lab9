@@ -1,0 +1,205 @@
+---
+title: "Lab 9 - HPC"
+output: 
+html_document: default
+link-citations: yes
+---
+
+# Learning goals
+
+In this lab, you are expected to practice the following skills:
+
+- Evaluate whether a problem can be parallelized or not.
+- Practice with the parallel package.
+- Use Rscript to submit jobs.
+
+```{r echo=FALSE, eval = FALSE}
+# install any missing packages
+install.packages("microbenchmark")
+```
+
+## Problem 1
+
+Give yourself a few minutes to think about what you learned about parallelization. List three
+examples of problems that you believe may be solved using parallel computing,
+and check for packages on the HPC CRAN task view that may be related to it.
+
+1: Cross validation in machine learning
+2: caret -> supports parallel cross validation with doParallel
+3: mlr, foreach, doParallel -? for parallel model training. Ex) Financial risk modeling, climate simulations, etc.
+
+Also boot for bootstrapping and parallel for parallelize resampling.
+Markov chain moten carlo
+rstan for stan for bayesian modeling
+RcppParallel for parallel mcmc sampling
+nimle for customizing bayesian inference
+
+## Problem 2: Pre-parallelization
+
+The following functions can be written to be more efficient without using
+`parallel`:
+
+1. This function generates a `n x k` dataset with all its entries having a Poisson distribution with mean `lambda`.
+
+```{r p2-fun1}
+fun1 <- function(n = 100, k = 4, lambda = 4) {
+  x <- NULL
+  
+  for (i in 1:n)
+    x <- rbind(x, rpois(k, lambda))
+  
+  return(x)
+}
+
+fun1alt <- function(n = 100, k = 4, lambda = 4) {
+  # YOUR CODE HERE
+  matrix(rpois(n*k, lambda = lambda), ncol = k)
+  
+}
+
+# Benchmarking
+microbenchmark::microbenchmark(
+  fun1(100),
+  fun1alt(100),
+  unit = "ns"
+)
+```
+
+How much faster?
+
+_Answer here._
+We check the mean and we can see that it's a lot faster.
+
+
+2.  Find the column max (hint: Checkout the function `max.col()`).
+
+```{r p2-fun2}
+# Data Generating Process (10 x 10,000 matrix)
+set.seed(1234)
+x <- matrix(rnorm(1e4), nrow=10)
+
+# Find each column's max value
+fun2 <- function(x) {
+  apply(x, 2, max)
+}
+
+fun2alt <- function(x) {
+  # YOUR CODE HERE
+  x[cbind(max.col(t(x)), 1:ncol(x))]
+}
+
+# Benchmarking
+bench <- microbenchmark::microbenchmark(
+  fun2(x),
+  fun2alt(x),
+  unit = "us"
+)
+bench
+```
+
+_Answer here with a plot._
+```{r}
+plot(bench)
+ggplot2::autoplot(bench) +
+  ggplot2::theme_minimal()
+```
+
+
+## Problem 3: Parallelize everything
+
+We will now turn our attention to non-parametric 
+[bootstrapping](https://en.wikipedia.org/wiki/Bootstrapping_(statistics)).
+Among its many uses, non-parametric bootstrapping allow us to obtain confidence
+intervals for parameter estimates without relying on parametric assumptions.
+
+The main assumption is that we can approximate many experiments by resampling
+observations from our original dataset, which reflects the population. 
+
+This function implements the non-parametric bootstrap:
+
+```{r p3-boot-fun}
+my_boot <- function(dat, stat, R, ncpus = 1L) {
+  
+  # Getting the random indices
+  n <- nrow(dat)
+  idx <- matrix(sample.int(n, n*R, TRUE), nrow=n, ncol=R)
+ 
+  # Making the cluster using `ncpus`
+  # STEP 1: GOES HERE
+  cl <- makePSOCKcluster(ncpus)
+  # created worker nodes
+  # creating cluster for parallel computing
+  # STEP 2: GOES HERE
+  clusterExport(cl, varlist = c("idx", "dat", "stat"), envir = environment())
+  # sending the variables to all worker nodes
+  # each run in isolated environment, dont have to access global variables.
+  
+  #change sequential apply to parallelized apply
+  # STEP 3: THIS FUNCTION NEEDS TO BE REPLACED WITH parLapply
+  ans <- parLapply(cl, seq_len(R), function(i) {
+    stat(dat[idx[,i], , drop=FALSE])
+  })
+  
+  # Coercing the list into a matrix
+  ans <- do.call(rbind, ans)
+  
+  # STEP 4: GOES HERE
+  stopCluster(cl)
+  ans
+  
+}
+```
+
+1. Use the previous pseudocode, and make it work with `parallel`. Here is just an example for you to try:
+
+```{r p3-test-boot}
+library(parallel)
+# Bootstrap of a linear regression model
+my_stat <- function(d) coef(lm(y~x, data = d))
+
+# DATA SIM
+set.seed(1)
+n <- 500 
+R <- 1e4
+x <- cbind(rnorm(n)) 
+y <- x*5 + rnorm(n)
+
+# Check if we get something similar as lm
+ans0 <- confint(lm(y~x))
+cat("OLS CI \n")
+print(ans0)
+
+ans1 <- my_boot(dat = data.frame(x,y), my_stat, R = R, ncpus = 4)
+qs <- c(.025, .975)
+cat("Bootstrp CI")
+print(t(apply(ans1, 2, quantile, probs = qs)))
+```
+
+2. Check whether your version actually goes faster than the non-parallel version:
+
+```{r benchmark-problem3}
+# your code here
+parallel::detectCores()
+
+#non-parallel 1 core
+system.time(my_boot(dat = data.frame(x,y), my_stat, R = 4000, ncpus = 1L))
+
+#parallel 8 core
+system.time(my_boot(dat = data.frame(x,y), my_stat, R = 4000, ncpus = 8L))
+```
+
+It does go faster. Non parallel takes 5.19 while parallel takes 3.72.
+
+## Problem 4: Compile this markdown document using Rscript
+
+Once you have saved this Rmd file, try running the following command
+in your terminal:
+
+```bash
+Rscript --vanilla -e 'rmarkdown::render("[full-path-to-your-Rmd-file.Rmd]")' &
+```
+
+Where `[full-path-to-your-Rmd-file.Rmd]` should be replace with the full path to
+your Rmd file... :).
+
+
